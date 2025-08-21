@@ -22,7 +22,6 @@ const orderSchema = new mongoose.Schema(
       image: Array,
     },
     quantity: {
-      // Added to store quantity explicitly
       type: Number,
       default: 1,
       required: true,
@@ -42,11 +41,11 @@ const orderSchema = new mongoose.Schema(
     },
     subTotalAmt: {
       type: Number,
-      default: 0, // Price for this product (after discount) * quantity
+      default: 0,
     },
     totalAmt: {
       type: Number,
-      default: 0, // Same as subTotalAmt (unless additional fees are added)
+      default: 0,
     },
     invoice_receipt: {
       type: String,

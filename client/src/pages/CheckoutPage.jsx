@@ -5,25 +5,36 @@ import AddAddress from "../components/AddAddress";
 import { useSelector } from "react-redux";
 import AxiosToastError from "../utils/AxiosToastError";
 import Axios from "../utils/Axios";
-import SummaryApi from "../common/SummaryApi";
 import toast from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
-import { loadStripe } from "@stripe/stripe-js";
 
 const CheckoutPage = () => {
   const { notDiscountTotalPrice, totalPrice, totalQty, fetchCartItem, fetchOrder } =
     useGlobalContext();
 
   const [openAddress, setOpenAddress] = useState(false);
+  const [isLoadingOnline, setIsLoadingOnline] = useState(false); // Loading state for online payment
+  const [isLoadingCOD, setIsLoadingCOD] = useState(false); // Loading state for cash on delivery
   const addressList = useSelector((state) => state.addresses.addressList);
   const [selectAddress, setSelectAddress] = useState(0);
   const cartItemsList = useSelector((state) => state.cartItem.cart);
   const navigate = useNavigate();
 
+  // Get product name for Razorpay heading (using first item or a fallback)
+  const productName = cartItemsList.length > 0 ? cartItemsList[0].name : "BmTechx Order";
+
   const handleCashOnDelivery = async () => {
+    // Check if addressList is empty or no valid address is selected
+    if (!addressList.length || !addressList[selectAddress]?._id) {
+      toast.error("Please select or add a delivery address");
+      return;
+    }
+
+    setIsLoadingCOD(true); // Start loading
     try {
       const response = await Axios({
-        ...SummaryApi.CashOnDeliveryOrder,
+        url: "/api/order/cash-on-delivery",
+        method: "post",
         data: {
           list_items: cartItemsList,
           addressId: addressList[selectAddress]?._id,
@@ -35,23 +46,29 @@ const CheckoutPage = () => {
         toast.success(responseData.message);
         fetchCartItem?.();
         fetchOrder?.();
-        navigate("/success", {
+        navigate("/", {
           state: { text: "Order" },
         });
       }
     } catch (error) {
       AxiosToastError(error);
+    } finally {
+      setIsLoadingCOD(false); // Stop loading
     }
   };
 
   const handleOnlinePayment = async () => {
-    try {
-      toast.loading("Redirecting to payment...");
-      const stripePublicKey = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
-      const stripePromise = await loadStripe(stripePublicKey);
+    // Check if addressList is empty or no valid address is selected
+    if (!addressList.length || !addressList[selectAddress]?._id) {
+      toast.error("Please select or add a delivery address");
+      return;
+    }
 
+    setIsLoadingOnline(true); // Start loading
+    try {
       const response = await Axios({
-        ...SummaryApi.payment_url,
+        url: "/api/order/checkout",
+        method: "post",
         data: {
           list_items: cartItemsList,
           addressId: addressList[selectAddress]?._id,
@@ -59,12 +76,54 @@ const CheckoutPage = () => {
       });
 
       const { data: responseData } = response;
-      stripePromise.redirectToCheckout({ sessionId: responseData.id });
+      const options = {
+        key: import.meta.env.VITE_RAZORPAY_KEY_ID,
+        amount: responseData.amount,
+        currency: "INR",
+        name: productName, // Use dynamic product name
+        description: "Order Payment",
+        order_id: responseData.id,
+        handler: async function (response) {
+          try {
+            const verifyResponse = await Axios({
+              url: "/api/order/checkout",
+              method: "post",
+              data: {
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                list_items: cartItemsList,
+                addressId: addressList[selectAddress]?._id,
+              },
+            });
 
-      fetchCartItem?.();
-      fetchOrder?.();
+            if (verifyResponse.data.success) {
+              toast.success("Payment successful!");
+              fetchCartItem?.();
+              fetchOrder?.();
+              navigate("/", {
+                state: { text: "Order" },
+              });
+            }
+          } catch (error) {
+            AxiosToastError(error);
+          } finally {
+            setIsLoadingOnline(false); // Stop loading
+          }
+        },
+        prefill: {
+          email: responseData.email,
+        },
+        theme: {
+          color: "#3B82F6",
+        },
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.open();
     } catch (error) {
       AxiosToastError(error);
+      setIsLoadingOnline(false); // Stop loading on error
     }
   };
 
@@ -151,15 +210,73 @@ const CheckoutPage = () => {
             <div className="mt-6 flex flex-col gap-3">
               <button
                 onClick={handleOnlinePayment}
-                className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold transition"
+                disabled={isLoadingOnline}
+                className={`w-full py-3 bg-blue-600 text-white rounded-lg font-semibold transition flex items-center justify-center ${
+                  isLoadingOnline ? "opacity-50 cursor-not-allowed" : "hover:bg-blue-700"
+                }`}
               >
-                Pay Online
+                {isLoadingOnline ? (
+                  <>
+                    <svg
+                      className="animate-spin h-5 w-5 mr-2 text-white"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    Processing...
+                  </>
+                ) : (
+                  "Pay Online"
+                )}
               </button>
               <button
                 onClick={handleCashOnDelivery}
-                className="w-full py-3 border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 font-semibold transition"
+                disabled={isLoadingCOD}
+                className={`w-full py-3 border border-blue-600 text-blue-600 rounded-lg font-semibold transition flex items-center justify-center ${
+                  isLoadingCOD ? "opacity-50 cursor-not-allowed" : "hover:bg-blue-50"
+                }`}
               >
-                Cash on Delivery
+                {isLoadingCOD ? (
+                  <>
+                    <svg
+                      className="animate-spin h-5 w-5 mr-2 text-blue-600"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    Processing...
+                  </>
+                ) : (
+                  "Cash on Delivery"
+                )}
               </button>
             </div>
           </div>

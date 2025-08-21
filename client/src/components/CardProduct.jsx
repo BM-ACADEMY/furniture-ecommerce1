@@ -10,7 +10,7 @@ const CardProduct = ({ data }) => {
 
   return (
     <div
-      className="group relative bg-white rounded-xl overflow-hidden transition-all duration-300 ease-in-out border border-gray-200 flex flex-col"
+      className="group relative bg-white rounded-xl mb-10 overflow-hidden transition-all duration-300 ease-in-out border border-gray-200 flex flex-col"
       style={{ minHeight: "350px" }} // Set a minimum height for consistency
     >
       {/* Image container with badges */}
@@ -44,7 +44,7 @@ const CardProduct = ({ data }) => {
           </h3>
 
           {/* Unit */}
-          <p className="text-xs text-gray-500 mb-3 min-h-[16px]">{data.unit}</p>
+          {/* <p className="text-xs text-gray-500 mb-3 min-h-[16px]">{data.unit}</p> */}
 
           {/* Price */}
           <div className="mt-auto">

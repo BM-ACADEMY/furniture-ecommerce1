@@ -1,8 +1,14 @@
-import Stripe from "../config/stripe.js";
+import Razorpay from "razorpay";
+import crypto from "crypto";
 import CartProductModel from "../models/cartproduct.model.js";
 import OrderModel from "../models/order.model.js";
 import UserModel from "../models/user.model.js";
 import mongoose from "mongoose";
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
 
 export async function CashOnDeliveryOrderController(request, response) {
   try {
@@ -70,7 +76,7 @@ export const pricewithDiscount = (price, dis = 0) => {
 export async function paymentController(request, response) {
   try {
     const userId = request.userId; // From auth middleware
-    const { list_items, addressId } = request.body;
+    const { list_items, addressId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = request.body;
 
     // Validate input
     if (!list_items || !addressId) {
@@ -90,119 +96,87 @@ export async function paymentController(request, response) {
       });
     }
 
-    // Create Stripe line items
-    const line_items = list_items.map((item) => ({
-      price_data: {
-        currency: "inr",
-        product_data: {
-          name: item.productId.name,
-          images: item.productId.image,
-          metadata: {
-            productId: item.productId._id,
-          },
-        },
-        unit_amount: pricewithDiscount(item.productId.price, item.productId.discount) * 100, // Price in paise
-      },
-      adjustable_quantity: {
-        enabled: true,
-        minimum: 1,
-      },
-      quantity: item.quantity, // Quantity passed to Stripe
-    }));
+    // If razorpay payment details are provided, verify and create order
+    if (razorpay_order_id && razorpay_payment_id && razorpay_signature) {
+      // Verify payment signature
+      const body = razorpay_order_id + "|" + razorpay_payment_id;
+      const expectedSignature = crypto
+        .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+        .update(body)
+        .digest("hex");
 
-    const params = {
-      submit_type: "pay",
-      mode: "payment",
-      payment_method_types: ["card"],
-      customer_email: user.email,
-      metadata: {
-        userId: userId,
-        addressId: addressId,
-      },
-      line_items: line_items,
-      success_url: `${process.env.PRODUCTION_URL}/success`,
-      cancel_url: `${process.env.PRODUCTION_URL}/cancel`,
+      if (expectedSignature !== razorpay_signature) {
+        return response.status(400).json({
+          message: "Invalid payment signature",
+          error: true,
+          success: false,
+        });
+      }
+
+      // Create order payload
+      const payload = list_items.map((el) => {
+        const productPrice = pricewithDiscount(el.productId.price, el.productId.discount);
+        const itemTotal = productPrice * el.quantity;
+        return {
+          userId: userId,
+          orderId: `ORD-${new mongoose.Types.ObjectId()}`,
+          productId: el.productId._id,
+          product_details: {
+            name: el.productId.name,
+            image: el.productId.image,
+          },
+          quantity: el.quantity,
+          paymentId: razorpay_payment_id,
+          payment_status: "Online Payments",
+          delivery_address: addressId,
+          subTotalAmt: itemTotal,
+          totalAmt: itemTotal,
+        };
+      });
+
+      // Insert orders
+      const generatedOrder = await OrderModel.insertMany(payload);
+
+      // Clear cart
+      await CartProductModel.deleteMany({ userId: userId });
+      await UserModel.updateOne({ _id: userId }, { shopping_cart: [] });
+
+      return response.json({
+        message: "Payment verified and order created successfully",
+        error: false,
+        success: true,
+        data: generatedOrder,
+      });
+    }
+
+    // If no payment details, create a Razorpay order
+    const totalAmount = list_items.reduce((sum, item) => {
+      const price = pricewithDiscount(item.productId.price, item.productId.discount);
+      return sum + price * item.quantity;
+    }, 0);
+
+    const options = {
+      amount: totalAmount * 100, // Convert to paise
+      currency: "INR",
+      receipt: `receipt_${new mongoose.Types.ObjectId()}`,
     };
 
-    const session = await Stripe.checkout.sessions.create(params);
+    const razorpayOrder = await razorpay.orders.create(options);
 
-    return response.status(200).json(session);
+    return response.status(200).json({
+      id: razorpayOrder.id,
+      amount: razorpayOrder.amount,
+      currency: razorpayOrder.currency,
+      email: user.email,
+      success: true,
+    });
   } catch (error) {
     console.log("Payment error:", error.message);
     return response.status(500).json({
-      message: error.message || "Failed to initiate payment",
+      message: error.message || "Failed to initiate or verify payment",
       error: true,
       success: false,
     });
-  }
-}
-
-export const getOrderProductItems = async ({ lineItems, userId, addressId, paymentId, payment_status }) => {
-  const productList = [];
-
-  if (lineItems?.data?.length) {
-    for (const item of lineItems.data) {
-      const product = await Stripe.products.retrieve(item.price.product);
-
-      const payload = {
-        userId: userId,
-        orderId: `ORD-${new mongoose.Types.ObjectId()}`,
-        productId: product.metadata.productId,
-        product_details: {
-          name: product.name,
-          image: product.images,
-        },
-        quantity: item.quantity, // Explicitly set quantity from Stripe
-        paymentId: paymentId,
-        payment_status: payment_status,
-        delivery_address: addressId,
-        subTotalAmt: Number(item.amount_total / 100), // Amount for this product (includes quantity)
-        totalAmt: Number(item.amount_total / 100), // Same as subTotalAmt
-      };
-
-      productList.push(payload);
-    }
-  }
-
-  return productList;
-};
-
-export async function webhookStripe(request, response) {
-  const event = request.body;
-  const endPointSecret = process.env.STRIPE_ENPOINT_WEBHOOK_SECRET_KEY;
-
-  try {
-    switch (event.type) {
-      case "checkout.session.completed":
-        const session = event.data.object;
-        const lineItems = await Stripe.checkout.sessions.listLineItems(session.id);
-        const userId = session.metadata.userId;
-        const addressId = session.metadata.addressId;
-
-        const orderProduct = await getOrderProductItems({
-          lineItems: lineItems,
-          userId: userId,
-          addressId: addressId,
-          paymentId: session.payment_intent,
-          payment_status: session.payment_status,
-        });
-
-        const order = await OrderModel.insertMany(orderProduct);
-
-        if (order.length > 0) {
-          await UserModel.findByIdAndUpdate(userId, { shopping_cart: [] });
-          await CartProductModel.deleteMany({ userId: userId });
-        }
-
-        break;
-      default:
-        console.log(`Unhandled event type ${event.type}`);
-    }
-
-    response.json({ received: true });
-  } catch (error) {
-    console.log("Webhook error:", error.message);
-    response.status(400).json({ error: error.message });
   }
 }
 

@@ -54,6 +54,11 @@ const CategoryWiseProductDisplay = ({ id, name }) => {
 
   const redirectURL = handleRedirectProductListpage();
 
+  // If no products and not loading, don't render the component
+  if (!loading && data.length === 0) {
+    return null;
+  }
+
   // Unique class names for navigation buttons to ensure independent scrolling
   const prevButtonClass = `swiper-button-prev-${id}`;
   const nextButtonClass = `swiper-button-next-${id}`;
@@ -66,7 +71,7 @@ const CategoryWiseProductDisplay = ({ id, name }) => {
           to={redirectURL}
           className="text-gray-600 hover:text-red-400 flex items-center gap-1"
         >
-         More <FaAngleRight />
+          More <FaAngleRight />
         </Link>
       </div>
       <div className="relative container mx-auto px-4">
